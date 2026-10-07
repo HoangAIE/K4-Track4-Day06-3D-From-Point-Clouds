@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import copy
 from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
@@ -32,7 +33,16 @@ def velo_to_cam(points_xyz: np.ndarray, calib: KittiCalib) -> np.ndarray:
       3. Trả về 3 cột đầu.
     Tự kiểm: một điểm velodyne (10, 0, 0) phải có z_cam ~ 10 (phía trước camera).
     """
-    raise NotImplementedError("TODO(CP2): cài đặt velo_to_cam")
+    pts = np.asarray(points_xyz)
+    if pts.size == 0 or len(pts) == 0:
+        return np.empty((0, 3), dtype=float)
+    was_1d = pts.ndim == 1
+    if was_1d:
+        pts = pts.reshape(1, -1)
+    pts_3d = pts[:, :3]
+    pts_homo = np.hstack([pts_3d, np.ones((len(pts_3d), 1), dtype=pts_3d.dtype)])
+    pts_cam = (pts_homo @ calib.T_cam_velo.T)[:, :3]
+    return pts_cam[0] if was_1d else pts_cam
 
 
 def cam_to_image(points_cam: np.ndarray, P2: np.ndarray, image_shape: tuple[int, ...],
@@ -52,7 +62,35 @@ def cam_to_image(points_cam: np.ndarray, P2: np.ndarray, image_shape: tuple[int,
       3. Chia cho s để có (u, v). Chỉ chia với điểm có depth > min_depth.
       4. Lọc theo kích thước ảnh image_shape[:2] = (H, W).
     """
-    raise NotImplementedError("TODO(CP2): cài đặt cam_to_image")
+    pts = np.asarray(points_cam)
+    if pts.size == 0 or len(pts) == 0:
+        return np.empty((0, 2), dtype=float), np.empty((0,), dtype=float), np.zeros((0,), dtype=bool)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+
+    N = len(pts)
+    H, W = int(image_shape[0]), int(image_shape[1])
+    pts_3d = pts[:, :3]
+    finite_mask = np.isfinite(pts_3d).all(axis=1)
+    pts_clean = np.where(finite_mask[:, None], pts_3d, 0.0)
+    pts_homo = np.hstack([pts_clean, np.ones((N, 1), dtype=pts_clean.dtype)])
+
+    proj = pts_homo @ P2.T
+    s = proj[:, 2]
+    z_cam = pts_3d[:, 2]
+
+    valid_pre = finite_mask & (z_cam > min_depth) & (s > 1e-4)
+    u = np.zeros(N, dtype=float)
+    v = np.zeros(N, dtype=float)
+    u[valid_pre] = proj[valid_pre, 0] / s[valid_pre]
+    v[valid_pre] = proj[valid_pre, 1] / s[valid_pre]
+
+    in_bounds = (u >= 0.0) & (u < W) & (v >= 0.0) & (v < H)
+    mask = valid_pre & in_bounds
+
+    uv = np.column_stack([u[mask], v[mask]])
+    depth = z_cam[mask]
+    return uv, depth, mask
 
 
 def project_velo_to_image(points: np.ndarray, calib: KittiCalib, image_shape: tuple[int, ...]):
@@ -64,6 +102,8 @@ def overlay_points(image: np.ndarray, uv: np.ndarray, depth: np.ndarray,
                    max_depth: float = 50.0, radius: int = 2) -> np.ndarray:
     """Vẽ điểm lên ảnh, màu theo depth (gần = đỏ, xa = xanh)."""
     out = image.copy()
+    if len(uv) == 0 or len(depth) == 0:
+        return out.copy()
     d = np.clip(depth / max_depth, 0, 1)
     colors = cv2.applyColorMap((255 * (1 - d)).astype(np.uint8).reshape(-1, 1), cv2.COLORMAP_JET)
     for (u, v), c in zip(uv.astype(int), colors[:, 0]):
@@ -115,6 +155,10 @@ def draw_box2d(image: np.ndarray, bbox, color=(0, 255, 0), label: str | None = N
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="Chiếu điểm LiDAR lên ảnh camera, tô màu theo độ sâu, vẽ 2D box của label")
     ap.add_argument("--data-root", default="data/synthetic",
                     help="thư mục KITTI (data/synthetic, data/kitti_mini) hoặc nuScenes (data/nuscenes_mini_subset)")
@@ -149,4 +193,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
     main()
